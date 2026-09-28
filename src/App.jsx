@@ -1,0 +1,1145 @@
+import React, { useState, useEffect } from 'react';
+import AuthModal from './components/auth/AuthModal.jsx';
+import PinAuthModal from './components/auth/PinAuthModal.jsx';
+import RoleSelector from './components/auth/RoleSelector.jsx';
+import ProfileCheckModal from './components/auth/ProfileCheckModal.jsx';
+import PatientLayout from './layouts/PatientLayout.jsx';
+import ClinicalShell from './layouts/ClinicalShell.jsx';
+import SosEmergencyButton from './components/sos/SosEmergencyButton.jsx';
+import PatientOnboardingModal from './components/onboarding/PatientOnboardingModal.jsx';
+import PatientTriageList from './components/dashboard/PatientTriageList.jsx';
+import CognitiveTrendChart from './components/dashboard/CognitiveTrendChart.jsx';
+import SyncStatusPanel from './components/dashboard/SyncStatusPanel.jsx';
+import PatientContentManager from './components/dashboard/PatientContentManager.jsx';
+import RemindersHub from './components/reminders/RemindersHub.jsx';
+import HomePage from './pages/HomePage.jsx';
+import Hub from './components2/Hub.jsx';
+import GameWrapper from './components2/GameWrapper.jsx';
+import RoadmapView from './components/roadmap/RoadmapView.jsx';
+import Navbar from './components/layout/Navbar.jsx';
+import GridMemoryGame from './components/games/GridMemoryGame.jsx';
+import VisualMatchingGame from './components/games/VisualMatchingGame.jsx';
+import SequenceOrderGame from './components/games/SequenceOrderGame.jsx';
+import SpeakButton from './components2/SpeakButton.jsx';
+import { GAMES_CONFIG } from './data/gamesConfig.js';
+import { getLocalizedGame, getGameVoiceExplanation, getUIString } from './data/gamesLocalization.js';
+import { formatOccupationDisplay } from './data/reminiscenceContent.js';
+import { useAppRoute } from './router/AppRouter.jsx';
+import { I18nProvider, useI18n, I18nContext } from './i18n/I18nContext.jsx';
+import { getActiveSession, logout, hasConfiguredPin, ROLES, PATIENT_IDLE_TIMEOUT_MS } from './services/authService.js';
+import useIdleTimer from './hooks/useIdleTimer.js';
+import PatientIdleLockModal from './components/auth/PatientIdleLockModal.jsx';
+import {
+  getRecentBiomarkers,
+  getBiomarkerSummary,
+  logGameCompletion
+} from './services/telemetryService.js';
+import { getPendingSyncEvents, getActiveProfile, seedPresetProfiles, DEFAULT_PROFILE, DEFAULT_DAILY_ROUTINE } from './db/indexedDb.js';
+import { PRESET_PATIENTS } from './data/presetPatients.js';
+import { saveGameScore, saveFamilyGameCompletion } from './utils/storage.js';
+
+import {
+  onSyncStatusChange,
+  initBackgroundSync
+} from './services/syncManager.js';
+import FamilyModuleRouter from './familyModule/FamilyModuleRouter.jsx';
+import IdentityRecallGame from './familyModule/games/identityRecall/IdentityRecallGame.jsx';
+import CategorySortingGame from './familyModule/games/categorySorting/CategorySortingGame.jsx';
+import FamilyTreeBuilderGame from './familyModule/games/familyTree/FamilyTreeBuilderGame.jsx';
+import LifeStoryTimelineGame from './familyModule/games/lifeTimeline/LifeStoryTimelineGame.jsx';
+
+
+const resolvePatientProfile = (patientId) => {
+  if (!patientId) return null;
+  const preset = PRESET_PATIENTS.find(p => p.id === patientId || p.name === patientId);
+  if (preset) return { ...preset, gameMasteryScores: {}, dailyRoutine: DEFAULT_DAILY_ROUTINE };
+  if (patientId === 'default_patient') return DEFAULT_PROFILE;
+  try {
+    const saved = localStorage.getItem('neurosetu_active_patient');
+    if (saved) return JSON.parse(saved);
+  } catch (e) {}
+  return { ...DEFAULT_PROFILE, id: patientId };
+};
+
+function AppInner() {
+  const { t, language } = useI18n();
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const { currentRoute, navigateTo } = useAppRoute();
+  const [session, setSession] = useState(() => getActiveSession());
+  const [patientProfile, setPatientProfile] = useState(() => {
+    const initialSession = getActiveSession();
+    if (initialSession && initialSession.role === ROLES.PATIENT && initialSession.patientId) {
+      return resolvePatientProfile(initialSession.patientId);
+    }
+    return null;
+  });
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [isRoleSelectorOpen, setIsRoleSelectorOpen] = useState(false);
+  const [authRole, setAuthRole] = useState(ROLES.PATIENT);
+  const [pinOpenedFromRoleSelector, setPinOpenedFromRoleSelector] = useState(false);
+  const [isCheckModalOpen, setIsCheckModalOpen] = useState(false);
+  const [isSosOpen, setIsSosOpen] = useState(false);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [isOnboardingInitialSignup, setIsOnboardingInitialSignup] = useState(false);
+  const [isDevNavOpen, setIsDevNavOpen] = useState(false);
+
+  // Active Game & Patient Section State
+  const [activeGame, setActiveGame] = useState(null); // 'memory' | 'pattern' | 'sequencing' | null
+  const [activeSuiteGame, setActiveSuiteGame] = useState(null); // Game config object for 15-game suite
+  const [patientSection, setPatientSection] = useState('games'); // 'games' | 'reminders'
+  const [dashboardTab, setDashboardTab] = useState('triage'); // 'triage' | 'content'
+  const [activeFamilyGame, setActiveFamilyGame] = useState(null); // 'identity_recall' | 'category_sorting' | 'family_tree' | 'life_timeline' | null
+  const [isPatientIdleLocked, setIsPatientIdleLocked] = useState(false);
+
+
+  // Inactivity detection for authenticated patient sessions (Dementia Gentle Lock)
+  useIdleTimer({
+    timeoutMs: PATIENT_IDLE_TIMEOUT_MS,
+    isEnabled: Boolean(
+      currentRoute === 'patient' &&
+      session &&
+      session.role === ROLES.PATIENT &&
+      session.patientId &&
+      !isPatientIdleLocked
+    ),
+    onIdle: () => {
+      setIsPatientIdleLocked(true);
+    }
+  });
+
+  // Daily Completed Games Key scoped to active patient ID
+  const getTodayCompletedKey = (patientId) => {
+    const today = new Date().toISOString().slice(0, 10);
+    return patientId ? `neurosetu_completed_games_${patientId}_${today}` : null;
+  };
+
+  // Primary Roadmap Game Launcher State
+  const [activeRoadmapGame, setActiveRoadmapGame] = useState(null);
+  const [completedGameIds, setCompletedGameIds] = useState(() => {
+    try {
+      const initial = getActiveSession();
+      if (initial && initial.role === ROLES.PATIENT && initial.patientId) {
+        const key = getTodayCompletedKey(initial.patientId);
+        const stored = key ? localStorage.getItem(key) : null;
+        return stored ? JSON.parse(stored) : [];
+      }
+      return [];
+    } catch (e) {
+      return [];
+    }
+  });
+  const [gameScores, setGameScores] = useState({});
+
+  // Sync completedGameIds whenever active patient changes
+  useEffect(() => {
+    if (session && session.role === ROLES.PATIENT && session.patientId) {
+      const key = getTodayCompletedKey(session.patientId);
+      try {
+        const stored = key ? localStorage.getItem(key) : null;
+        setCompletedGameIds(stored ? JSON.parse(stored) : []);
+      } catch (e) {
+        setCompletedGameIds([]);
+      }
+    } else {
+      setCompletedGameIds([]);
+    }
+  }, [session?.patientId, session?.role]);
+
+  // Persist completedGameIds scoped to patient
+  useEffect(() => {
+    if (session && session.role === ROLES.PATIENT && session.patientId) {
+      const key = getTodayCompletedKey(session.patientId);
+      if (key) {
+        try {
+          localStorage.setItem(key, JSON.stringify(completedGameIds));
+        } catch (e) {}
+      }
+    }
+  }, [completedGameIds, session?.patientId, session?.role]);
+
+  // Session migration on app mount
+  useEffect(() => {
+    const current = getActiveSession();
+    if (current && current.role === ROLES.PATIENT && !current.patientId) {
+      logout();
+      setSession(null);
+    }
+  }, []);
+
+  // Dashboard State
+  const [selectedPatientId, setSelectedPatientId] = useState('patient_001');
+
+  // Local Telemetry & Sync State
+  const [telemetryLogs, setTelemetryLogs] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+
+  const refreshTelemetry = async () => {
+    try {
+      const recent = await getRecentBiomarkers(session?.profileName || 'default_patient', 8);
+      const summ = await getBiomarkerSummary(session?.profileName || 'default_patient');
+      const pending = await getPendingSyncEvents();
+      setTelemetryLogs(recent);
+      setSummary(summ);
+      setPendingSyncCount(pending.length);
+    } catch (e) {
+      console.error('Error refreshing telemetry:', e);
+    }
+  };
+
+  useEffect(() => {
+    async function loadProfile() {
+      if (session && session.role === ROLES.PATIENT && session.patientId) {
+        const prof = await getActiveProfile(session.patientId);
+        if (prof) setPatientProfile(prof);
+      } else {
+        setPatientProfile(null);
+      }
+    }
+    loadProfile();
+  }, [session]);
+
+  useEffect(() => {
+    initBackgroundSync();
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      refreshTelemetry();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      refreshTelemetry();
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    const unsubscribeSync = onSyncStatusChange((update) => {
+      if (update.status === 'success') {
+        refreshTelemetry();
+      }
+    });
+
+    refreshTelemetry();
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      unsubscribeSync();
+    };
+  }, [session]);
+
+  const handleAuthSuccess = (newSession) => {
+    setSession(newSession);
+    if (newSession && newSession.role === ROLES.PATIENT && newSession.patientId) {
+      const resolved = resolvePatientProfile(newSession.patientId);
+      if (resolved) setPatientProfile(resolved);
+    }
+    setIsPinModalOpen(false);
+    setPinOpenedFromRoleSelector(false);
+    setIsCheckModalOpen(false);
+    setIsRoleSelectorOpen(false);
+
+    if (newSession?.role === ROLES.CAREGIVER) {
+      navigateTo('family');
+    } else if (newSession?.role === ROLES.ASHA_WORKER) {
+      navigateTo('dashboard');
+    } else {
+      navigateTo('patient');
+    }
+  };
+
+  const handleSelectRole = (role) => {
+    setAuthRole(role);
+    setIsRoleSelectorOpen(false);
+    setPinOpenedFromRoleSelector(true);
+    setIsPinModalOpen(true);
+  };
+
+  const handleBackToRoleSelector = () => {
+    setIsPinModalOpen(false);
+    setPinOpenedFromRoleSelector(false);
+    setIsRoleSelectorOpen(true);
+  };
+
+  const handleOnboardingBack = () => {
+    setIsOnboardingOpen(false);
+    if (isOnboardingInitialSignup) {
+      setIsCheckModalOpen(true);
+    }
+  };
+
+  const handleLogout = () => {
+    setIsPatientIdleLocked(false);
+    setActiveFamilyGame(null);
+    logout();
+    setSession(null);
+    navigateTo('home');
+  };
+
+  const handleExitGame = () => {
+    setActiveGame(null);
+    refreshTelemetry();
+  };
+
+  const handleBackToGameHub = (result = null) => {
+    const targetFamilyGame = result?.gameId || activeFamilyGame;
+    const patientId = session?.patientId || activePatientProfile?.id || 'demo_patient_001';
+    if (targetFamilyGame && patientId) {
+      saveFamilyGameCompletion(patientId, targetFamilyGame);
+      setCompletedGameIds(prev => prev.includes(targetFamilyGame) ? prev : [...prev, targetFamilyGame]);
+    }
+    if (result && typeof result === 'object') {
+      logGameCompletion({
+        gameId: targetFamilyGame,
+        patientId,
+        profileId: patientId,
+        accuracy: result.accuracy,
+        responseTimeMs: result.responseTimeMs ?? result.latencyMs,
+        errorCount: result.errorCount ?? 0,
+        difficultyTier: result.tier ?? result.difficultyTier ?? 2,
+        sessionLevel: result.sessionLevel ?? result.level ?? 5
+      }).catch(err => console.warn('Failed to log family game telemetry:', err));
+    }
+    setActiveFamilyGame(null);
+    refreshTelemetry();
+  };
+
+  const familyGameLaunchMap = {
+    'identity-recall': () => setActiveFamilyGame('identity_recall'),
+    'identity_recall': () => setActiveFamilyGame('identity_recall'),
+    'category-sorting': () => setActiveFamilyGame('category_sorting'),
+    'category_sorting': () => setActiveFamilyGame('category_sorting'),
+    'family-tree': () => setActiveFamilyGame('family_tree'),
+    'family_tree': () => setActiveFamilyGame('family_tree'),
+    'family-tree-builder': () => setActiveFamilyGame('family_tree'),
+    'life-timeline': () => setActiveFamilyGame('life_timeline'),
+    'life_timeline': () => setActiveFamilyGame('life_timeline'),
+    'life-story-timeline': () => setActiveFamilyGame('life_timeline')
+  };
+
+  const handlePlayFamilyGame = (gameId) => {
+    const launcher = familyGameLaunchMap[gameId];
+    if (launcher) {
+      launcher();
+    } else {
+      setActiveFamilyGame(gameId);
+    }
+  };
+
+  const handlePlayFamilyGameFromBanner = (gameId = null) => {
+    if (gameId && familyGameLaunchMap[gameId]) {
+      familyGameLaunchMap[gameId]();
+    } else {
+      navigateTo('family');
+    }
+  };
+
+  const selectedPatient = PRESET_PATIENTS.find(p => p.id === selectedPatientId) || PRESET_PATIENTS[0];
+
+  const activePatientProfile = patientProfile || (session?.patientId ? resolvePatientProfile(session.patientId) : null);
+
+  const isEn = (activePatientProfile?.language || 'en') === 'en';
+
+  const patientDisplayTitle = activePatientProfile
+    ? `${activePatientProfile.name}${formatOccupationDisplay(activePatientProfile) ? ` • ${formatOccupationDisplay(activePatientProfile)}` : ''} (${activePatientProfile.villageTown ? `${activePatientProfile.villageTown}, ` : ''}${activePatientProfile.homeState || 'Assam'})`
+    : 'Patient';
+
+  // Dev toolbar visibility: enabled in dev / test mode or with ?debug=true
+  const isDevMode = Boolean(
+    (typeof import.meta !== 'undefined' && import.meta.env?.DEV) ||
+    (typeof process !== 'undefined' && (process.env?.NODE_ENV === 'development' || process.env?.NODE_ENV === 'test')) ||
+    (typeof window !== 'undefined' && window.location.search.includes('debug=true'))
+  );
+
+  const handleLaunchPatient = () => {
+    if (session && session.role === ROLES.PATIENT && session.patientId) {
+      navigateTo('patient');
+      setActiveGame(null);
+      setActiveFamilyGame(null);
+    } else {
+      setIsCheckModalOpen(true);
+    }
+  };
+
+
+  const handleClosePinModal = () => {
+    setIsPinModalOpen(false);
+    setPinOpenedFromRoleSelector(false);
+    // Graceful cancellation: if user cancels re-auth on dashboard, safely return to home without trap states
+    if (currentRoute === 'dashboard' && (!session || (session.role !== ROLES.ASHA_WORKER && session.role !== ROLES.CAREGIVER))) {
+      navigateTo('home');
+    }
+  };
+
+  const patientLevel = activePatientProfile?.masteryScore
+    ? Math.min(10, Math.max(1, Math.ceil(activePatientProfile.masteryScore / 10)))
+    : activePatientProfile?.starting_difficulty_tier === 3
+    ? 8
+    : activePatientProfile?.starting_difficulty_tier === 2
+    ? 5
+    : 2;
+
+  const handleLaunchRoadmapGame = (gameId, nodeLevel, params) => {
+    if (familyGameLaunchMap[gameId]) {
+      handlePlayFamilyGame(gameId);
+      return;
+    }
+    const gameConfig = GAMES_CONFIG.find((g) => g.id === gameId);
+    if (gameConfig) {
+      setActiveRoadmapGame({
+        gameConfig,
+        gameId,
+        level: nodeLevel,
+        difficultyParams: params
+      });
+    }
+  };
+
+  const handleCompleteRoadmapGame = (result) => {
+    if (activeRoadmapGame) {
+      const { gameId, level } = activeRoadmapGame;
+      const patientId = session?.patientId || activePatientProfile?.id || 'demo_patient_001';
+      setCompletedGameIds(prev => prev.includes(gameId) ? prev : [...prev, gameId]);
+      if (result) {
+        setGameScores(prev => ({
+          ...prev,
+          [gameId]: {
+            stars: result.stars || 3,
+            accuracy: result.accuracy || 100,
+            score: result.score || 0
+          }
+        }));
+        if (patientId) {
+          saveGameScore(gameId, result.score || 100, {
+            stars: result.stars || 3,
+            accuracy: result.accuracy || 100,
+            level: activeRoadmapGame.level
+          }, patientId);
+        }
+
+        // Record normalized telemetry log
+        logGameCompletion({
+          gameId: result.gameId || gameId,
+          patientId,
+          profileId: patientId,
+          accuracy: result.accuracy,
+          responseTimeMs: result.responseTimeMs ?? result.latencyMs,
+          errorCount: result.errorCount ?? 0,
+          difficultyTier: result.tier ?? result.difficultyTier ?? (level <= 3 ? 1 : level <= 7 ? 2 : 3),
+          sessionLevel: result.sessionLevel ?? result.level ?? level ?? 5
+        }).catch(err => console.warn('Failed to log roadmap game telemetry:', err));
+      }
+    }
+    setActiveRoadmapGame(null);
+    refreshTelemetry();
+  };
+
+  const handleExitRoadmapGame = () => {
+    setActiveRoadmapGame(null);
+    refreshTelemetry();
+  };
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-slate-50/60 font-sans antialiased text-slate-800 selection:bg-teal-600 selection:text-white">
+      {/* Network Status Banner */}
+      {!isOnline ? (
+        <div
+          data-testid="network-status"
+          className="w-full bg-amber-600 text-white text-xs font-semibold py-1.5 px-4 text-center flex items-center justify-center gap-2"
+        >
+          <span>Offline Mode Active — Service Worker Serving Shell</span>
+        </div>
+      ) : (
+        <div data-testid="network-status" className="sr-only" aria-hidden="true">
+          Online — Cloud Sync Ready
+        </div>
+      )}
+
+      {/* Surface 0: Home Surface (Default Entry View on "/" and refresh) */}
+      {currentRoute === 'home' && (
+        <HomePage
+          onLaunchPatient={handleLaunchPatient}
+          onLaunchDashboard={() => navigateTo('dashboard')}
+          onLaunchHub={() => navigateTo('hub')}
+          onLaunchFamilyGames={() => navigateTo('family')}
+          onOpenRoleSelector={() => setIsRoleSelectorOpen(true)}
+          onOpenSetup={() => {
+            setIsOnboardingInitialSignup(!hasConfiguredPin());
+            setIsOnboardingOpen(true);
+          }}
+          onEnterPin={() => {
+            setAuthRole(ROLES.PATIENT);
+            setIsPinModalOpen(true);
+          }}
+          initialLanguage={patientProfile?.language || 'en'}
+          onLanguageChange={(lang) => {
+            setPatientProfile(prev => ({ ...prev, language: lang }));
+          }}
+        />
+
+      )}
+
+      {/* Surface: Cognitive Training Game Suite Hub */}
+      {currentRoute === 'hub' && (
+        (session && session.role === ROLES.PATIENT && session.patientId && patientProfile) ? (
+          activeSuiteGame ? (
+            <GameWrapper
+              gameConfig={activeSuiteGame}
+              onBack={() => setActiveSuiteGame(null)}
+              onExit={() => {
+                setActiveSuiteGame(null);
+                navigateTo('hub');
+              }}
+              language={patientProfile?.language || 'en'}
+            >
+              {activeSuiteGame.component ? (
+                React.createElement(activeSuiteGame.component, {
+                  language: patientProfile?.language || 'en',
+                  patientProfile,
+                  onExit: () => {
+                    setActiveSuiteGame(null);
+                    navigateTo('hub');
+                  }
+                })
+              ) : (
+                <div className="p-8 text-center text-xl text-slate-700 bg-teal-50 rounded-2xl border-2 border-teal-200">
+                  This game is planned for Phase 2!
+                </div>
+              )}
+            </GameWrapper>
+          ) : (
+            <div>
+              <div className="bg-stone-900 text-slate-200 px-4 py-2.5 text-xs flex flex-wrap justify-between items-center gap-2 border-b border-stone-800">
+                <button
+                  type="button"
+                  onClick={() => navigateTo('home')}
+                  className="text-teal-300 hover:text-white font-bold flex items-center gap-1.5 cursor-pointer text-sm"
+                >
+                  <span>←</span>
+                  <span>Return to NeuroSetu Portal</span>
+                </button>
+                <div className="flex flex-wrap items-center gap-2 sm:gap-4 font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => navigateTo('patient')}
+                    className="hover:text-teal-300 cursor-pointer"
+                  >
+                    Patient Care Hub
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigateTo('dashboard')}
+                    className="hover:text-teal-300 cursor-pointer"
+                  >
+                    ASHA Telemetry Dashboard
+                  </button>
+                </div>
+              </div>
+              <Hub
+                games={GAMES_CONFIG}
+                patientProfile={patientProfile}
+                onSelectGame={(game) => setActiveSuiteGame(game)}
+                language={patientProfile?.language || 'en'}
+                onLanguageChange={(lang) => {
+                  setPatientProfile(prev => ({ ...prev, language: lang }));
+                }}
+              />
+            </div>
+          )
+        ) : (
+          <div className="max-w-md mx-auto my-16 p-8 bg-white rounded-3xl border border-slate-200/80 shadow-soft-xl text-center space-y-5 animate-slide-up">
+            <span className="text-3xl block">🔒</span>
+            <h2 className="text-lg font-bold text-slate-900">
+              {t('authRequired')}
+            </h2>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              {t('authPromptPatient')}
+            </p>
+            <div className="space-y-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthRole(ROLES.PATIENT);
+                  setIsPinModalOpen(true);
+                }}
+                className="w-full min-h-[48px] py-3 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-2xl text-xs shadow-soft transition active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>🔑</span>
+                <span>{t('enterPin')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsRoleSelectorOpen(true)}
+                className="w-full py-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 font-semibold rounded-xl text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>👥</span>
+                <span>{t('switchRole')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => navigateTo('home')}
+                className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold rounded-xl text-xs transition cursor-pointer"
+              >
+                <span>←</span>
+                <span>{t('returnToHome')}</span>
+              </button>
+            </div>
+          </div>
+        )
+      )}
+
+      {/* Surface 1: Patient Experience Shell (WCAG 2.1 AA) */}
+      {currentRoute === 'patient' && (
+        (session && session.role === ROLES.PATIENT && session.patientId && activePatientProfile) ? (
+          <PatientLayout
+            profileName={patientDisplayTitle}
+            language={language || activePatientProfile?.language || 'en'}
+            activeSection={patientSection}
+            onNavigate={(section) => {
+              if (section === 'home') navigateTo('home');
+              else setPatientSection(section);
+            }}
+            onLogout={handleLogout}
+            onOpenSos={() => setIsSosOpen(true)}
+            onLanguageChange={(code) => setLanguage(code)}
+            isOnline={isOnline}
+          >
+            {/* Reminders & Routine Hub */}
+            {patientSection === 'reminders' && (
+              <RemindersHub
+                patientProfile={activePatientProfile}
+                language={language}
+                onExit={() => setPatientSection('games')}
+              />
+            )}
+
+            {/* Active Roadmap Cognitive Game */}
+            {patientSection === 'games' && activeRoadmapGame && (
+              <GameWrapper
+                gameConfig={activeRoadmapGame.gameConfig}
+                onBack={handleExitRoadmapGame}
+                onExit={handleExitRoadmapGame}
+                language={language}
+                isPaused={isPatientIdleLocked}
+              >
+                {activeRoadmapGame.gameConfig.component ? (
+                  React.createElement(activeRoadmapGame.gameConfig.component, {
+                    language,
+                    patientProfile: activePatientProfile,
+                    level: activeRoadmapGame.level,
+                    difficultyParams: activeRoadmapGame.difficultyParams,
+                    onComplete: handleCompleteRoadmapGame,
+                    onExit: handleExitRoadmapGame
+                  })
+                ) : (
+                  <div className="p-8 text-center text-xl text-slate-700 bg-teal-50 rounded-2xl border-2 border-teal-200">
+                    Game coming soon!
+                  </div>
+                )}
+              </GameWrapper>
+            )}
+
+            {/* Active Family Reminiscence Games */}
+            {patientSection === 'games' && activeFamilyGame === 'identity_recall' && (
+              <IdentityRecallGame
+                onBackToMenu={handleBackToGameHub}
+                onComplete={handleBackToGameHub}
+                patientProfile={activePatientProfile}
+                profileId={session?.patientId}
+                level={patientLevel}
+              />
+            )}
+
+            {patientSection === 'games' && activeFamilyGame === 'category_sorting' && (
+              <CategorySortingGame
+                onBackToMenu={handleBackToGameHub}
+                onComplete={handleBackToGameHub}
+                patientProfile={activePatientProfile}
+                profileId={session?.patientId}
+                level={patientLevel}
+              />
+            )}
+
+            {patientSection === 'games' && activeFamilyGame === 'family_tree' && (
+              <FamilyTreeBuilderGame
+                onBackToMenu={handleBackToGameHub}
+                onComplete={handleBackToGameHub}
+                patientProfile={activePatientProfile}
+                profileId={session?.patientId}
+                level={patientLevel}
+              />
+            )}
+
+            {patientSection === 'games' && activeFamilyGame === 'life_timeline' && (
+              <LifeStoryTimelineGame
+                onBackToMenu={handleBackToGameHub}
+                onComplete={handleBackToGameHub}
+                patientProfile={activePatientProfile}
+                profileId={session?.patientId}
+                level={patientLevel}
+              />
+            )}
+
+            {/* Direct Game Fallbacks */}
+            {patientSection === 'games' && !activeRoadmapGame && !activeFamilyGame && activeGame === 'memory' && (
+              <GridMemoryGame
+                profileId={session?.profileName || 'default_patient'}
+                patientProfile={activePatientProfile}
+                language={language}
+                onExit={handleExitGame}
+              />
+            )}
+
+            {patientSection === 'games' && !activeRoadmapGame && !activeFamilyGame && activeGame === 'pattern' && (
+              <VisualMatchingGame
+                profileId={session?.profileName || 'default_patient'}
+                patientProfile={activePatientProfile}
+                language={language}
+                onExit={handleExitGame}
+              />
+            )}
+
+            {patientSection === 'games' && !activeRoadmapGame && !activeFamilyGame && activeGame === 'sequencing' && (
+              <SequenceOrderGame
+                profileId={session?.profileName || 'default_patient'}
+                patientProfile={activePatientProfile}
+                language={language}
+                onExit={handleExitGame}
+              />
+            )}
+
+            {/* Primary Roadmap Journey View (Clean, distraction-free patient experience) */}
+            {patientSection === 'games' && !activeRoadmapGame && !activeGame && !activeFamilyGame && (
+              <RoadmapView
+                patientProfile={activePatientProfile}
+                level={patientLevel}
+                completedGameIds={completedGameIds}
+                gameScores={gameScores}
+                onSelectGame={handleLaunchRoadmapGame}
+                onPlayFamilyGame={handlePlayFamilyGame}
+                onExit={() => navigateTo('home')}
+              />
+            )}
+
+          </PatientLayout>
+        ) : (
+          <div className="max-w-md mx-auto my-16 p-8 bg-white rounded-3xl border border-slate-200/80 shadow-soft-xl text-center space-y-5 animate-slide-up">
+            <span className="text-3xl block">🔒</span>
+            <h2 className="text-lg font-bold text-slate-900">
+              {isEn ? 'Authentication Required' : 'প্ৰৱেশ পিন প্ৰয়োজন'}
+            </h2>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              {isEn
+                ? 'Please enter your 6-digit PIN or register your profile to access cognitive games.'
+                : 'ৰোগীৰ খেলসমূহ উপভোগ কৰিবলৈ অনুগ্ৰহ কৰি আপোনাৰ ৬-সংখ্যাৰ পিন দিয়ক।'}
+            </p>
+            <div className="space-y-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthRole(ROLES.PATIENT);
+                  setIsPinModalOpen(true);
+                }}
+                className="w-full min-h-[48px] py-3 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-2xl text-xs shadow-soft transition active:scale-95 flex items-center justify-center gap-1.5"
+              >
+                🔑 {isEn ? 'Enter Profile PIN' : 'পিন প্ৰৱেশ কৰক'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsRoleSelectorOpen(true)}
+                className="w-full py-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 font-semibold rounded-xl text-xs transition flex items-center justify-center gap-1.5"
+              >
+                👥 {isEn ? 'Switch / Select Role' : 'ভূমিকা সলনি কৰক (Switch Role)'}
+              </button>
+              <button
+                type="button"
+                onClick={() => navigateTo('home')}
+                className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold rounded-xl text-xs transition"
+              >
+                ← {isEn ? 'Return to Home' : 'মুখ্য পৃষ্ঠালৈ উভতি যাওক'}
+              </button>
+            </div>
+          </div>
+        )
+      )}
+
+      {/* Surface 2: ASHA Worker & Caregiver Clinical Dashboard */}
+      {currentRoute === 'dashboard' && (
+        (session && (session.role === ROLES.ASHA_WORKER || session.role === ROLES.CAREGIVER)) ? (
+          <ClinicalShell
+            profileName={session?.profileName || 'ASHA Worker'}
+            role={session?.role === ROLES.ASHA_WORKER ? 'ASHA Worker' : 'Caregiver'}
+            isOnline={isOnline}
+            currentRoute={currentRoute}
+            onNavigate={(route) => navigateTo(route)}
+            onLogout={handleLogout}
+          >
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-5 rounded-2xl border border-slate-200/80 shadow-soft mb-6">
+            <div className="min-w-0 max-w-full">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-100">
+                Primary Health Centre (PHC) & ASHA Portal
+              </span>
+              <h1 className="text-xl sm:text-2xl font-bold text-slate-900 mt-1 tracking-tight break-words">
+                North East Dementia Triage & Telemetry Portal
+              </h1>
+              <p className="text-xs text-slate-500 mt-0.5 font-normal">
+                Silent passive monitoring: response latency spikes, voice prosody flattening, and DDA downward interventions.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => navigateTo('home')}
+                className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-semibold rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+              >
+                ← Return to Home
+              </button>
+              <button
+                type="button"
+                onClick={() => navigateTo('family')}
+                className="text-xs px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-semibold rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+              >
+                👥 Family Memory Portal
+              </button>
+              <span className="text-xs px-3 py-1 bg-slate-50 text-slate-700 border border-slate-200 font-semibold rounded-xl">
+                Jurisdiction: Kamrup & Bishnupur
+              </span>
+            </div>
+          </div>
+
+          {/* Sync Status Panel */}
+          <SyncStatusPanel
+            pendingCount={pendingSyncCount}
+            isOnline={isOnline}
+            onSyncComplete={refreshTelemetry}
+          />
+
+          {/* ASHA Dashboard Sub-Navigation Tabs */}
+          <div className="flex items-center gap-2 p-1 bg-slate-100/90 rounded-2xl border border-slate-200/80 max-w-md shadow-xs">
+            <button
+              type="button"
+              onClick={() => setDashboardTab('triage')}
+              aria-selected={dashboardTab === 'triage'}
+              role="tab"
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                dashboardTab === 'triage'
+                  ? 'bg-white text-teal-850 shadow-soft border border-slate-200/60'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              📋 Clinical Triage & Telemetry
+            </button>
+            <button
+              type="button"
+              onClick={() => setDashboardTab('content')}
+              aria-selected={dashboardTab === 'content'}
+              role="tab"
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                dashboardTab === 'content'
+                  ? 'bg-white text-teal-850 shadow-soft border border-slate-200/60'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              📦 Content & Domain Packs
+            </button>
+          </div>
+
+          {/* Tab 1: Clinical Triage & Telemetry */}
+          {dashboardTab === 'triage' && (
+            <>
+              {/* 2-Column Grid: Patient Triage List + Selected Patient Trend Chart */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                <div className="lg:col-span-5">
+                  <PatientTriageList
+                    selectedPatientId={selectedPatientId}
+                    onSelectPatient={(id) => setSelectedPatientId(id)}
+                  />
+                </div>
+
+                <div className="lg:col-span-7 space-y-6">
+                  <CognitiveTrendChart
+                    patientName={selectedPatient.name}
+                  />
+
+                  {/* Local Physical DB Records Table */}
+                  <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-soft">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <h3 className="font-bold text-slate-900 text-xs break-words">
+                        Local Device Telemetry Buffer (IndexedDB: <code className="text-xs bg-slate-100 px-1 py-0.5 rounded text-slate-700">telemetry_logs</code>)
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={refreshTelemetry}
+                        className="text-xs bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-xl font-semibold text-slate-700 transition"
+                      >
+                        🔄 Refresh Table
+                      </button>
+                    </div>
+
+                    {telemetryLogs.length === 0 ? (
+                      <div className="py-8 text-center bg-slate-50 rounded-xl border border-slate-100 space-y-1.5">
+                        <span className="text-2xl block">📋</span>
+                        <p className="text-xs font-semibold text-slate-700">No sessions recorded yet</p>
+                        <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                          Local telemetry records (response latency, errors, DDA interventions) will populate here after sessions are completed.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-200/80 text-slate-400 uppercase text-[10px] tracking-wider">
+                              <th className="py-2">Game / Task</th>
+                              <th className="py-2">Accuracy</th>
+                              <th className="py-2">Latency</th>
+                              <th className="py-2">Errors</th>
+                              <th className="py-2">Level / Tier</th>
+                              <th className="py-2">Alert</th>
+                              <th className="py-2">Sync Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-slate-700">
+                            {telemetryLogs.map((log) => (
+                              <tr key={log.id} className="hover:bg-slate-50/70 transition-colors">
+                                <td className="py-2.5 font-medium text-slate-900">{log.gameId || log.taskType || '—'}</td>
+                                <td className="py-2.5 text-slate-600 font-semibold">{log.accuracy !== undefined ? `${Math.round(log.accuracy)}%` : '—'}</td>
+                                <td className="py-2.5 text-slate-600">{log.responseTimeMs ?? log.latencyMs ?? 0} ms</td>
+                                <td className="py-2.5 text-slate-600">{log.errorCount ?? 0}</td>
+                                <td className="py-2.5 font-semibold text-teal-700">
+                                  {log.sessionLevel ? `L${log.sessionLevel} (T${log.difficultyTier || 1})` : (log.ddaAdjustment || '—')}
+                                </td>
+                                <td className="py-2.5">
+                                  {log.alertFlag ? (
+                                    <span className="bg-teal-50 text-teal-900 border border-teal-200/70 px-2 py-0.5 rounded-full text-[11px] font-semibold">ALERT</span>
+                                  ) : (
+                                    <span className="text-slate-400">Normal</span>
+                                  )}
+                                </td>
+                                <td className="py-2.5">
+                                  {log.isSynced ? (
+                                    <span className="text-emerald-700 font-semibold">Synced ✓</span>
+                                  ) : (
+                                    <span className="text-teal-800 bg-teal-50/70 border border-teal-200/60 px-2 py-0.5 rounded-full text-[11px] font-medium">Pending Sync</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Tab 2: V1 Content & Domain Packs Shell */}
+          {dashboardTab === 'content' && (
+            <PatientContentManager />
+          )}
+          </ClinicalShell>
+      ) : (
+        <div className="max-w-md mx-auto my-16 p-8 bg-white rounded-3xl border border-slate-200/80 shadow-soft-xl text-center space-y-5 animate-slide-up">
+            <span className="text-3xl block">🔒</span>
+            <h2 className="text-lg font-bold text-slate-900">
+              {t('authRequired')}
+            </h2>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              {t('authPromptClinical')}
+            </p>
+            <div className="space-y-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthRole(ROLES.CAREGIVER);
+                  setIsPinModalOpen(true);
+                }}
+                className="w-full min-h-[48px] py-3 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-2xl text-xs shadow-soft transition active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>🔑</span>
+                <span>{t('enterPin')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsRoleSelectorOpen(true)}
+                className="w-full py-2 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 font-semibold rounded-xl text-xs transition flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>👥</span>
+                <span>{t('switchRole')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => navigateTo('home')}
+                className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-semibold rounded-xl text-xs transition cursor-pointer"
+              >
+                <span>←</span>
+                <span>{t('returnToHome')}</span>
+              </button>
+            </div>
+          </div>
+        )
+      )}
+
+      {/* Surface 3: Family Reminiscence & Memory Portal */}
+      {currentRoute === 'family' && (
+        <FamilyModuleRouter
+          role={session?.role || null}
+          patientId={session?.patientId || activePatientProfile?.id || null}
+          patientProfile={activePatientProfile}
+          onReturnToMainApp={() => navigateTo('home')}
+        />
+      )}
+
+      {/* Surface: 404 Unknown Route Fallback */}
+      {!['home', 'hub', 'patient', 'dashboard', 'family'].includes(currentRoute) && (
+        <div data-testid="not-found-view" className="min-h-[70vh] flex items-center justify-center p-6 animate-fade-in">
+
+          <div className="max-w-md w-full bg-white rounded-3xl p-8 sm:p-10 border border-slate-200/80 shadow-soft-xl text-center space-y-5">
+            <div className="w-16 h-16 bg-teal-50 text-teal-700 rounded-3xl flex items-center justify-center mx-auto text-3xl font-bold border border-teal-200/80 shadow-soft">
+              🧭
+            </div>
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-teal-700 bg-teal-50 px-2.5 py-0.5 rounded-full border border-teal-200/60">
+                404 Error
+              </span>
+              <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                {isEn ? 'Page Not Found' : 'পৃষ্ঠাটো পোৱা নগ’ল (404 Not Found)'}
+              </h1>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed font-normal">
+                {isEn
+                  ? 'The page or route you are looking for does not exist or has been moved.'
+                  : 'আপুনি বিচৰা পৃষ্ঠাটো বা লিংকটো উপলব্ধ নহয় অথবা স্থানান্তৰ কৰা হৈছে।'}
+              </p>
+            </div>
+
+            <div className="space-y-2 pt-2">
+              <button
+                type="button"
+                onClick={() => navigateTo('home')}
+                className="min-h-[48px] w-full py-3 bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white rounded-2xl text-xs font-bold shadow-soft transition active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                🏠 {isEn ? 'Return to Home Portal' : 'মুখ্য পৃষ্ঠালৈ উভতি যাওক'}
+              </button>
+              <button
+                type="button"
+                onClick={handleLaunchPatient}
+                className="min-h-[44px] w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                🎮 {isEn ? 'Launch Patient Games' : 'ৰোগীৰ খেলসমূহ আৰম্ভ কৰক'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Profile Check Modal (Device-based check via IndexedDB) */}
+      <ProfileCheckModal
+        isOpen={isCheckModalOpen}
+        onClose={() => setIsCheckModalOpen(false)}
+        onRouteToPin={() => {
+          setIsCheckModalOpen(false);
+          setAuthRole(ROLES.PATIENT);
+          setIsPinModalOpen(true);
+        }}
+        onRouteToSignup={() => {
+          setIsCheckModalOpen(false);
+          setIsOnboardingInitialSignup(true);
+          setIsOnboardingOpen(true);
+        }}
+      />
+
+      {/* Accessible Role Selector Modal (Shown before PIN entry) */}
+      <RoleSelector
+        isOpen={isRoleSelectorOpen}
+        selectedRole={authRole}
+        onSelectRole={handleSelectRole}
+        onClose={() => setIsRoleSelectorOpen(false)}
+        language={patientProfile?.language || 'en'}
+      />
+
+      {/* Accessible PIN Authentication Modal */}
+      <PinAuthModal
+        isOpen={isPinModalOpen}
+        onClose={handleClosePinModal}
+        onSuccess={handleAuthSuccess}
+        profileName={
+          authRole === ROLES.CAREGIVER
+            ? 'Caregiver'
+            : authRole === ROLES.ASHA_WORKER
+            ? 'ASHA Worker'
+            : (patientProfile?.name || 'Elderly Patient')
+        }
+        role={authRole}
+        openedFromRoleSelector={pinOpenedFromRoleSelector}
+        onBackToRoleSelector={handleBackToRoleSelector}
+        onChangeRole={handleBackToRoleSelector}
+      />
+
+      {/* One-Touch Voice SOS Emergency Assistance Modal */}
+      <SosEmergencyButton
+        isOpen={isSosOpen}
+        onClose={() => {
+          setIsSosOpen(false);
+          refreshTelemetry();
+        }}
+        profileId={session?.profileName || 'default_patient'}
+      />
+
+      {/* Personalized Onboarding Intake Modal */}
+      <PatientOnboardingModal
+        isOpen={isOnboardingOpen}
+        isInitialSignup={isOnboardingInitialSignup}
+        initialProfile={patientProfile}
+        onClose={() => setIsOnboardingOpen(false)}
+        onBack={handleOnboardingBack}
+        onSave={(updatedProfile) => {
+          setPatientProfile(updatedProfile);
+          setIsOnboardingOpen(false);
+          if (isOnboardingInitialSignup) {
+            setSession(getActiveSession());
+            navigateTo('patient');
+          }
+        }}
+      />
+
+      {/* Dementia Gentle Idle Lock Modal (Automatic Inactivity Protection) */}
+      <PatientIdleLockModal
+        isOpen={isPatientIdleLocked}
+        profileName={activePatientProfile?.name || patientProfile?.name || patientDisplayTitle}
+        patientId={session?.patientId}
+        language={activePatientProfile?.language || 'en'}
+        onUnlock={() => setIsPatientIdleLocked(false)}
+        onExitToHome={() => {
+          setIsPatientIdleLocked(false);
+          handleLogout();
+        }}
+      />
+    </div>
+  );
+}
+
+export default function App() {
+  const existingI18n = React.useContext(I18nContext);
+  if (existingI18n) {
+    return <AppInner />;
+  }
+  return (
+    <I18nProvider>
+      <AppInner />
+    </I18nProvider>
+  );
+}

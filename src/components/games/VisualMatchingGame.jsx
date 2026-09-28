@@ -1,0 +1,113 @@
+import React, { useState } from 'react';
+import { TEXTILE_PATTERN_TASKS } from '../../data/reminiscenceContent.js';
+import SpeakButton from '../../components2/SpeakButton.jsx';
+import { useI18n } from '../../i18n/I18nContext.jsx';
+
+const task = TEXTILE_PATTERN_TASKS[0];
+
+/**
+ * VisualMatchingGame.jsx - Cultural Textile Pattern Matching Game
+ * 
+ * Modernized replacement for legacy PatternMatchingGame.
+ */
+export default function VisualMatchingGame({
+  patientProfile = null,
+  language: propLanguage = null,
+  onComplete = null,
+  onExit = null
+}) {
+  const language = propLanguage || patientProfile?.language || 'as';
+  const isEnglish = language === 'en';
+  const isHindi = language === 'hi';
+  const [selected, setSelected] = useState(null);
+  const [eliminated, setEliminated] = useState([]);
+
+  const getLabel = (option) => {
+    if (isEnglish) return option.labelEn;
+    if (isHindi) return option.labelHi || option.labelEn;
+    return option.labelAs;
+  };
+
+  const prompt = isEnglish ? task.promptEn : isHindi ? task.promptHi || task.promptEn : task.promptAs;
+  const taskTitle = isEnglish ? 'Golden Muga Silk' : isHindi ? task.titleHi || task.title : task.title;
+
+  const handleSelect = (option) => {
+    if (selected || eliminated.includes(option.id)) return;
+    if (option.id === task.correctAnswer) {
+      setSelected(option.id);
+      if (onComplete) onComplete({ score: 100, maxScore: 100, accuracy: 100 });
+    } else {
+      setEliminated((previous) => [...previous, option.id]);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200 shadow-soft max-w-2xl mx-auto space-y-5">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-amber-700 uppercase tracking-wider">
+          {isEnglish ? 'Traditional Patterns' : isHindi ? 'पारंपरिक वस्त्र पैटर्न' : 'বস্ত্ৰ চানেকি'}
+        </span>
+        {onExit && (
+          <button
+            type="button"
+            onClick={onExit}
+            className="text-sm text-slate-500 hover:text-slate-800 min-h-[48px] px-3 cursor-pointer"
+          >
+            {isEnglish ? 'Exit' : isHindi ? 'बाहर जाएं' : 'বন্ধ কৰক'}
+          </button>
+        )}
+      </div>
+
+      <div className="text-center space-y-3">
+        <div
+          className="w-48 h-28 mx-auto rounded-2xl border-2 border-slate-200 shadow-soft flex items-center justify-center"
+          style={{ backgroundColor: task.patternColor }}
+        >
+          <span className="px-3 py-1 rounded-full bg-white/90 text-xs font-bold text-slate-800 shadow-xs">
+            {taskTitle}
+          </span>
+        </div>
+        <div className="flex items-center justify-center gap-2">
+          <h2 className="text-lg font-bold text-slate-900">{prompt}</h2>
+          <SpeakButton text={prompt} language={language} label="Read question aloud" />
+        </div>
+      </div>
+
+      {selected && (
+        <div
+          data-testid="success-banner"
+          className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-center font-semibold"
+        >
+          🌟 {isEnglish ? 'Correct textile match!' : isHindi ? 'शानदार! आपका उत्तर बिल्कुल सही है।' : 'নিখুঁত মিল! আপোনাৰ বাছনি শুদ্ধ হৈছে।'}
+        </div>
+      )}
+
+      {!selected && eliminated.length > 0 && (
+        <div
+          data-testid="gentle-hint-banner"
+          className="p-4 rounded-2xl bg-slate-50 border border-slate-200 text-slate-700"
+        >
+          💡 {isEnglish ? 'Look carefully at the weave colour.' : isHindi ? (task.hintHi || 'रंग और बुनाई को ध्यान से देखें।') : task.gentlePrompt}
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {task.options.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            disabled={selected === option.id || eliminated.includes(option.id) || Boolean(selected)}
+            onClick={() => handleSelect(option)}
+            className="min-h-[100px] rounded-2xl border-2 border-slate-200 bg-white font-semibold hover:bg-amber-50 disabled:opacity-40 p-3 transition active:scale-95 cursor-pointer"
+          >
+            <span
+              className="block w-10 h-10 mx-auto mb-2 rounded-full border-2 border-white shadow-xs"
+              style={{ backgroundColor: option.colorHex }}
+            />
+            {getLabel(option)}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,26 @@
+@import url('./styles/tokens.css');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  background-color: var(--surface-page);
+  color: var(--ink-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Enforce minimum touch target on interactive elements */
+button, a, input, select {
+  touch-action: manipulation;
+}
+
+/* Accessible focus ring style */
+:focus-visible {
+  outline: 3px solid var(--color-bamboo);
+  outline-offset: 2px;
+}
+

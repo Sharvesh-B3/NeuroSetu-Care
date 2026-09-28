@@ -1,0 +1,181 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  matchOfflineKeywords,
+  blobToBase64,
+  transcribeAudio,
+  synthesizeSpeech,
+  stopAllSpeech,
+  transliterateIndicToLatin,
+  getActiveTTSProvider,
+  isBhashiniConfigured,
+  ASSAMESE_OFFLINE_KEYWORDS
+} from '../../src/services/bhashiniService.js';
+
+describe('Task 15 & 17: Bhashini Speech Service & Assamese Keyword Engine', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('1. matchOfflineKeywords matches Assamese cultural words and aliases', () => {
+    // Exact Assamese match
+    const dholMatch = matchOfflineKeywords('মই ঢোল শুনিছোঁ');
+    expect(dholMatch).not.toBeNull();
+    expect(dholMatch.matchedKey).toBe('dhol');
+
+    // Transliterated alias match
+    const bihuMatch = matchOfflineKeywords('Rongali bihu festival');
+    expect(bihuMatch).not.toBeNull();
+    expect(bihuMatch.matchedKey).toBe('bihu');
+
+    // Unknown word returns null
+    const unknownMatch = matchOfflineKeywords('some random query');
+    expect(unknownMatch).toBeNull();
+  });
+
+  it('2. blobToBase64 converts Audio Blob to base64 string', async () => {
+    const dummyBlob = new Blob(['mock-audio-data'], { type: 'audio/wav' });
+    const base64 = await blobToBase64(dummyBlob);
+    expect(typeof base64).toBe('string');
+  });
+
+  it('3. transcribeAudio executes on-device keyword fallback when offline or unconfigured', async () => {
+    // Unconfigured state
+    const result = await transcribeAudio(null, 'as');
+    expect(result.success).toBe(true);
+    expect(result.isOffline).toBe(true);
+    expect(result.provider).toBe('on_device_keyword_spotting');
+    expect(result.transcript).toBe('ঢোল');
+    expect(result.detectedKeyword).toBe('dhol');
+  });
+
+  it('4. transcribeAudio calls live Bhashini API endpoint when configured', async () => {
+    // Set mock env credentials
+    process.env.VITE_BHASHINI_API_KEY = 'mock_bhashini_key';
+    process.env.VITE_BHASHINI_USER_ID = 'mock_user_id';
+
+    const mockResponse = {
+      pipelineResponse: [
+        {
+          output: [
+            {
+              source: 'পেঁপা বজাওক'
+            }
+          ]
+        }
+      ]
+    };
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(mockResponse)
+    });
+
+    const dummyBlob = new Blob(['audio-data'], { type: 'audio/wav' });
+    const result = await transcribeAudio(dummyBlob, 'as');
+
+    expect(result.success).toBe(true);
+    expect(result.transcript).toBe('পেঁপা বজাওক');
+    expect(result.detectedKeyword).toBe('pepa');
+    expect(result.isOffline).toBe(false);
+    expect(result.provider).toBe('bhashini_cloud');
+
+    // Clean up mock env
+    delete process.env.VITE_BHASHINI_API_KEY;
+    delete process.env.VITE_BHASHINI_USER_ID;
+  });
+
+  it('5. synthesizeSpeech provides safe fallback to Web Speech API when offline', async () => {
+    const mockSpeak = vi.fn();
+    const mockCancel = vi.fn();
+    window.speechSynthesis = {
+      speak: mockSpeak,
+      cancel: mockCancel
+    };
+    global.SpeechSynthesisUtterance = vi.fn();
+
+    const result = await synthesizeSpeech('নমস্কাৰ', 'as');
+    expect(result.success).toBe(true);
+    expect(result.isOffline).toBe(true);
+    expect(result.provider).toBe('browser_web_speech');
+  });
+
+  it('6. transliterateIndicToLatin correctly converts Devanagari Hindi text to phonetic Latin for English TTS', () => {
+    const hindiGreeting = 'न्यूरोसेतु में आपका स्वागत है। आपका दिन शुभ हो। अपनी याददाश्त और खेल के लिए नीचे दिए गए कार्ड को छुएं या दवाई की याददाश्त देखें। आप माइक दबाकर बोलकर भी जवाब दे सकते हैं।';
+    const transliterated = transliterateIndicToLatin(hindiGreeting);
+    expect(transliterated).toContain('NeuroSetu mein aapka swaagat hai');
+    expect(/[\u0900-\u097F]/.test(transliterated)).toBe(false); // No remaining Devanagari chars
+  });
+
+  it('7. synthesizeSpeech supports Hindi targetLanguage seamlessly', async () => {
+    const mockSpeak = vi.fn();
+    const mockCancel = vi.fn();
+    window.speechSynthesis = {
+      speak: mockSpeak,
+      cancel: mockCancel,
+      getVoices: () => []
+    };
+    global.SpeechSynthesisUtterance = vi.fn().mockImplementation((text) => ({ text, lang: 'hi-IN' }));
+
+    const result = await synthesizeSpeech('न्यूरोसेतु में आपका स्वागत है।', 'hi');
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe('browser_web_speech');
+  });
+
+  it('8. getActiveTTSProvider correctly detects configured Cloud API keys', () => {
+    expect(getActiveTTSProvider()).toBe('browser_web_speech');
+
+    process.env.VITE_OPENAI_API_KEY = 'mock_openai_key';
+    expect(getActiveTTSProvider()).toBe('openai');
+    delete process.env.VITE_OPENAI_API_KEY;
+
+    process.env.VITE_ELEVENLABS_API_KEY = 'mock_eleven_key';
+    expect(getActiveTTSProvider()).toBe('elevenlabs');
+    delete process.env.VITE_ELEVENLABS_API_KEY;
+  });
+
+  it('9. stopAllSpeech cancels SpeechSynthesis and dispatches speech-stopped event', () => {
+    const mockCancel = vi.fn();
+    window.speechSynthesis = {
+      cancel: mockCancel,
+      speak: vi.fn(),
+      getVoices: () => []
+    };
+
+    const stopListener = vi.fn();
+    window.addEventListener('neurosetu:speech-stopped', stopListener);
+
+    stopAllSpeech();
+
+    expect(mockCancel).toHaveBeenCalled();
+    expect(stopListener).toHaveBeenCalled();
+
+    window.removeEventListener('neurosetu:speech-stopped', stopListener);
+  });
+
+  it('10. synthesizeSpeech cancels previous speech before starting new utterance', async () => {
+    const mockCancel = vi.fn();
+    const mockSpeak = vi.fn();
+    window.speechSynthesis = {
+      speak: mockSpeak,
+      cancel: mockCancel,
+      getVoices: () => []
+    };
+    global.SpeechSynthesisUtterance = vi.fn().mockImplementation((text) => ({ text }));
+
+    const startListener = vi.fn();
+    window.addEventListener('neurosetu:speech-started', startListener);
+
+    await synthesizeSpeech('First instruction', 'en');
+    expect(mockCancel).toHaveBeenCalled();
+    expect(startListener).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ text: 'First instruction' })
+      })
+    );
+
+    window.removeEventListener('neurosetu:speech-started', startListener);
+  });
+});
+
+
+
