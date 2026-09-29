@@ -1,20 +1,26 @@
 <div align="center">
 
-# 🧠 NeuroSetu (নিউৰ'সেতু / নিউরোসেতু / न्यूरोसेतु)
-### Offline-First Cognitive Care & Memory Assistance PWA for Elderly Dementia in North-East India
+# 🧠 NeuroSetu-Care
+### Offline-First PWA for Dementia & Alzheimer’s Care (SIH Project)
 
-*Bridging the healthcare divide with culturally resonant, local-first digital therapeutics for patients, caregivers, and frontline ASHA workers.*
+*Bridging the healthcare divide with culturally resonant, local-first digital therapeutics for patients, caregivers, and frontline ASHA workers in North-East India.*
 
 [![Smart India Hackathon 2026](https://img.shields.io/badge/SIH-2026-orange?style=for-the-badge)](https://www.sih.gov.in/)
 [![Problem Statement](https://img.shields.io/badge/PS-26003-blue?style=for-the-badge)](https://www.sih.gov.in/)
 [![PWA Offline First](https://img.shields.io/badge/PWA-Offline--First-5A0FC8?style=for-the-badge&logo=pwa&logoColor=white)](https://web.dev/progressive-web-apps/)
+[![JavaScript](https://img.shields.io/badge/JavaScript-ES6+-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
 [![React 18](https://img.shields.io/badge/React-18.3-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
-[![Vite](https://img.shields.io/badge/Vite-5.1-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)](https://supabase.com/)
 
-**[🚀 Live Production Demo](https://neurosetu-synaptyx.vercel.app/)** · **[🎥 Intro Video Walkthrough](#-video-walkthrough)** · **[🏗 Architecture](./ARCHITECTURE.md)** · **[🎨 UI/UX Design System](./DESIGN.md)** · **[📄 Product Requirements](./PRD.md)**
+---
 
+### 🌐 [🚀 Click Here to Launch Live Demo on Vercel](https://neurosetu-synaptyx.vercel.app/)
+> **Instant Browser Access:** Open in any modern mobile or desktop browser. No app store installation required — click **Install** or **Add to Home Screen** to use full offline PWA capabilities.
+
+---
+
+**[🚀 Live Demo](https://neurosetu-synaptyx.vercel.app/)** · **[🎥 Intro Video Walkthrough](#-video-walkthrough)** · **[🏗 Architecture](./ARCHITECTURE.md)** · **[🎨 UI/UX Design System](./DESIGN.md)** · **[📄 Product Requirements](./PRD.md)**
 </div>
 
 ---
@@ -103,14 +109,15 @@ In the **North-Eastern Region (NER) of India**, rural communities face acute str
 
 | Domain | Technology | Justification |
 |:---|:---|:---|
+| **Core Languages** | **JavaScript (ES6+)**, **HTML5**, **CSS3** | Modern web standards, semantic audio/canvas elements, and responsive mobile-first layouts |
 | **Frontend Framework** | [React 18](https://react.dev/) + [Vite 5](https://vitejs.dev/) | Ultra-fast build times, modular component trees, zero-overhead hydration |
-| **Styling & A11y** | [Tailwind CSS 3.4](https://tailwindcss.com/) | Low runtime footprint, precision control over high-contrast color palettes |
-| **Offline Engine** | [Vite PWA Plugin](https://vite-pwa-org.netlify.app/) & [Workbox](https://developer.chrome.com/docs/workbox) | Service worker precaching, stale-while-revalidate runtime caching |
-| **Local Storage** | [IndexedDB (`idb`)](https://github.com/jakearchibald/idb) | Uncapped structured client-side storage for offline game history |
+| **PWA Capabilities** | [Workbox](https://developer.chrome.com/docs/workbox) & Service Workers | Complete offline caching of app shell & audio, installable manifest, background sync |
+| **Styling & Dementia-Safe UI** | [Tailwind CSS 3.4](https://tailwindcss.com/) | High-contrast palette (WCAG AAA), $\ge$48px tap targets, zero cognitive clutter |
+| **Local Storage** | [IndexedDB (`idb`)](https://github.com/jakearchibald/idb) | Uncapped structured client-side storage for offline game history & telemetry |
 | **Remote Database** | [Supabase](https://supabase.com/) ([PostgreSQL](https://www.postgresql.org/)) | Row Level Security (RLS), patient isolation, and seamless REST/realtime APIs |
-| **Typography** | `@fontsource/noto-sans-bengali`, `@fontsource/noto-sans-devanagari` | Crisp native rendering for regional Indic scripts |
+| **Typography** | `@fontsource/noto-sans-bengali`, `@fontsource/noto-sans-devanagari` | Crisp native rendering for regional Indic scripts (Assamese, Bengali, Hindi) |
 | **Icons & Media** | [Lucide React](https://lucide.dev/) | Clean, semantic iconography for low-cognitive-load navigation |
-| **Testing** | [Vitest](https://vitest.dev/) & [Testing Library](https://testing-library.com/) | Blazing-fast headless testing of game engines and sync logic |
+| **Testing** | [Vitest](https://vitest.dev/) & [Testing Library](https://testing-library.com/) | Blazing-fast headless testing of game engines and sync logic (476 passing tests) |
 | **Deployment** | [Vercel](https://vercel.com/) | Global edge delivery with automated HTTPS and PWA header compliance |
 
 ---
